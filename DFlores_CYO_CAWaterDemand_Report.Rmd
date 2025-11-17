@@ -1,0 +1,390 @@
+---
+title: "HarvardX PH125.9x Data Science Capstone Choose Your Own Project: Use of Machine Learning to Predict Monthly Residential Water Demand in California"
+author: "Dawn Flores"
+date: "`r Sys.Date()`"
+output: pdf_document
+editor_options: 
+  markdown: 
+    wrap: sentence
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(openxlsx)
+library(caret)
+library(lubridate)
+library(broom)
+library(knitr)
+library(randomForest)
+options(digits = 5)
+options(pillar.sigfig = 5)
+knitr::read_chunk("DFlores_WaterUse_Capstone.R")
+knitr::opts_chunk$set(echo = TRUE, fig.height=4.5, fig.width=6.5)
+```
+
+# Section 1: Introduction and Overview
+
+This project has been completed as part of the HarvardX PH125.9x Data Science course series.
+Forecasting water use (also referred to as water demand) is becoming critical as a water supply management tool as urban areas grow and face challenges such as climate change causing water supplies to be less reliable.
+In the state of California in the United States (US), water management is particularly challenging due to the varying climates and availability of water accross the state where the water is used across various sectors including urban use, agricultural use, and enviroinmental use.
+Urban water use can be divided into a number of categories such as residential, commercial, institutional, industrial, irrigation, and other uses.
+Per the California State Water Resources Control Board, residential water use can be affected by numerous factors, including: rainfall, temperature, evaporation rates, population growth, population density, socio-economic measures, and water prices (State Water Resources Control Board, 2015).
+This analysis explores residential water demand and supply patterns across California using the CaRDS dataset (Gross et al, 2024a) and readily available supplementary socioeconomic and climate data.
+The goal is to understand factors influencing water use, normalize demand metrics, and evaluate predictive models for estimating residential water demand.
+
+The following key steps were used to accomplish this:
+
+1.  Download, extract and apply basic formatting to dataset
+
+2.  Review dataset
+
+3.  Develop rating prediction models
+
+4.  Select a prediction model
+
+5.  Generate a set of rating predictions for the final holdout dataset
+
+# Section 2: Methods and Analysis
+
+The following sections explain the process and techniques used in the analysis, including data import and formatting, data exploration, and the modeling approach and analysis.
+The analysis was completed using R code in the RStudio software (version 2025.05.0+496 "Mariposa Orchid" Release for windows).
+
+## 2.1 Data Import and Formatting
+
+The following datasets were used for this analysis:
+
+-   California Residential Water Demand and Supply (CaRDS) open dataset, which includes separate files with water use and supply data, and public water supplier data (Gross et al, 2024a)
+
+-   2022 Risk Assessment Results for the California State Water Resources Control Board (SWRCB) Safe and Affordable Funding for Equity and Resilience (SAFER) program (SWRCB, 2022)
+
+The CaRDS dataset contains nine years (2013 to 2021) of monthly water supply and demand time series for 404 water suppliers in California, USA, precipitation data and temperature data.
+This data was compiled from different open-access data sources, including the SWRCB Electronic Annual Reports (eAR), the PRISM Climate Data from the PRISM Climate Group, and the Climate Division Data (ClimDiv) from the National Oceanic and Atmospheric Administration (Gross et al, 2024b).
+The primary CaRDS dataset is structured with columns for public water system identification number (PWSID), Variable, and columns representing years and months with the data for each variable structured as xYYYY.MM.01.
+Variables include demand (measured in liters), supply (measured in liters), temperature (degrees C), precipitation (millimeters (mm)), and PDSI (unitless, stands for Palmer Drought Severity Index).
+The creators of the CaRDS dataset processed the data by ensuring that key information was present, including PSWID, measurement units, records for every year, no missing values, and reporting of both supply and demand data.
+
+The secondary dataset, supplier_info, contains the following fields: PWSID, supplier name, zip code, whether the supplier is a large water system or small water system (size), county, hydrologic region, climate zone, 2021 population, and PDSI division.
+
+These datasets, which were previously downloaded, were loaded and examined using the below code:
+
+```{r CARDS-dataset, echo=TRUE, message=FALSE, warning=FALSE, results='hide'}
+```
+
+This dataset was reshaped to a format that can be readily used in machine learning using the code shown below, and the CaRDS data set joined to the supplier information table.
+
+```{r Reshape-and-join-data, echo=TRUE, message=FALSE, warning=FALSE, results='hide'}
+```
+
+Demand was normalized to account for large differences in demand by water system and for varying days per month.
+The below code was used to create a new column for residential demand measured in gallons per capita per day (gpcd), which is a common measure of residential demand in the United States.
+Water systems that were missing population or with negative population were removed.
+For the purposes of this analysis, only large water systems (LWS) were included.
+
+```{r Normalize-water-use, echo=TRUE, message=FALSE, warning=FALSE, results='hide'}
+```
+
+The resulting gpcd column has a range of 5.9344e-06 to 51878519, which is outside the expected range of gpcd values.
+In California, gpcd values for water systems typically range from 40 gpcd to 500 gpcd (Heberger, 2014).
+GPCD values outside of this range were filtered out using the code below.
+Per the data documentation provided for the CaRDS dataset, a small percentage of demand outliers are possible due to misreporting of data by water suppliers to the SWRCB (Gross et al, 2024b).
+
+```{r Filter-gpcd, echo=TRUE, message=FALSE, warning=FALSE, results='hide'}
+```
+
+Next, median household income (MHI) for each water system was loaded from the SWRCB's 2022 SAFER data workbook.
+The workbook, in Microsoft Excel format, contains several spreadsheets of data.
+For the purposes of this project, the XXXX sheet was imported then filtered to include only PWSID and MHI using the code below.
+For cases where the MHI was missing, the average California MHI, \$78,672, was used (United States Census Bureau, 2020).
+
+```{r Load-and-filter-SAFER, echo=TRUE, message=FALSE, warning=FALSE, results='hide'}
+```
+
+Finally, during the COVID pandemic, the State of California issued stay at home orders that were in place from March 2020 to June 2021 (Executive Department State of California, 2021).
+This order resulted in residential water use increasing as much of the population in the state was required to stay at home when businesses were closed.
+For the period of time this order was in place, a factor of 1 was assigned while all other months were assigned a 0, as shown in the code below.
+
+```{r COVID, echo=TRUE, message=FALSE, warning=FALSE, results='hide'}
+```
+
+Once the dataset was compiled as described above, columns that were expected to be used in the analysis were converted from characters to either factors or numerical data types to facilitate the analysis, and was applied to the following columns using the below code: Hydrologic.Region, Climate.Zone, County, and month.
+In addition, given that precipitation can be extremely variable across the state, a new column of log transformed precipitation was created to better manage extreme precipitation values.
+
+```{r Transform-fields, echo=TRUE, message=FALSE, warning=FALSE, results='hide'}
+```
+
+The resulting data set contains monthly records from 2013 to 2022 for 165 large water systems, with data for demand, supply, precipitation, temperature, PDSI, zip code, county, hydrologic region and climate zone.
+
+## 2.2 Data Exploration
+
+Once the dataset was created as described in Section 2.1, the data was explored to determine potential ranges and patterns.
+
+### Demand and Hydrologic Regions
+
+The range of demands within each hydrologic region was examined to visualize whether demand may vary across region.
+Hydrologic regions are geographic divisions created by the SWRCB based on regional watershed boundaries.
+There are ten regions named as follows: North Coast, Sacramento River, North Lahontan, San Francisco Bay, San Joaquin River, Central Coast, Tulare Lake, South Lahontan, South coast and Colorado River.
+A map of these zones along with the number of suppliers per region can be found in Gross et al, 2024b.
+
+As shown in the box plot below titled "Range of Monthly Residential Demands by Hydrologic Region", total demand varies significantly among hydrologic regions.
+This is expected given that population varies widely within each region, ranging from 0 liters to nearly 800,000,000 liters per month per water system.
+The chart titled "Normalized Residential Demand by Hydrologic Region" better reflects patters of water use across hydrologic region.
+For example, while the North Lahontan Hydrologic Region has low total demand, normalized demand shows a much higher water use per capita than other regions, while the opposite can be said for the Colorado River Hydrologic Region.
+Note that to better visualize the interquartile range, outliers are not shown on the charts.
+
+The variation of water demand by month can be seen in the chart "Monthly Residential Demand by Hydrologic Region".
+This chart reflects that during certain months of the year, demand is higher.
+This is likely due to increased temperatures and decreased precipitation during summer months.
+The variation of annual demand can be seen in "Annual Residential Demand by Hydrologic Region", which sums demand for each year.
+This chart shows that there is annual variation in water, which is expected given that precipitation in California can vary from year to year.
+This chart also reflects increased residential demands in 2020 due to the COVID stay at home order issued in California.
+
+```{r Explore-demand-hydrologic-region, echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+```
+
+### Demand and Climate Zones
+
+The range of demands within each climate zone was also examined.
+Climate zones are geographic divisions created by the California Energy Commission and are "geographical regions that are defined by unique weather patterns, average temeratures, and energy demands" (Stillitano, 2025).
+While there is some similarity between hydrologic regions and climate zones, the 16 climate zones have somewhat different boundaries.
+A map of climate zones is provided in Gross et al, 2024b.
+
+Similar to demand by hydrologic region, there is significant variation in total demand among climate zones, as shown in the box plot charts titled "Total Monthly Residential Demands by Climate Zone".
+Normalized demand shows more similarity among climate zones as shown in the chart titled "Normalized Residential Demand by Climate Zone".
+Note that outliers have been removed to better show the interquartile range.
+
+The charts titled "Monthly Residential Demand by Climate Zone" and "Annual Residential Demand by Climate Zone" show the variation among months and years, similar to the patterns seen by hydrologic region.
+
+```{r Explore-demand-climate-zone, echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+```
+
+### Climate Factors
+
+As described previously, the dataset contains multiple climate factors, including precipitation, temperature and PDSI.
+Charts were created to show the variation of these climate factors by climate zone.
+The chart titled "Precipitation by Climate Zone Time Series" shows the monthly total of precipitation by climate zone across the time series, and reflects how the monthly and annual variability of precipitation.
+The boxplot titled "Precipitation by Climate Zone" reflects the variation of precipitation by geography, showing that some areas receive significantly more precipitation than other areas.
+
+```{r Explore-climate-precip, echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+```
+
+Temperature was similarly examined by time series in the chart titled "Temperature by Climate Zone Time Series", which shows the monthly average temperature by climate zone across the time series.
+This chart reflects the monthly variability of temperature, as well as the significant variability among climate zones.
+The boxplot titled "Temperature by climate zone reflects the variation of precipitation by geography, showing that some areas receive significantly more precipitation than other areas.
+
+```{r Explore-climate-temp, echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+```
+
+Because precipitation and temperature are both seasonal, temperature was plotted against precipitation (shown below).
+Although there is a slight correlation between the two, the variability is large enough to warrant including both factors in the machine learning model.
+
+```{r Temp-vs-precip, echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+```
+
+The PDSI was examined by plotting PDSI as a time series and as a box plot by climate zone.
+PDSI is "a measure to estimate relative dryness and it is very effective in accounting for long-term drought conditions, taking the basic effects of global warming into account. The PDSI is provided by NOAA and calculated for large areas, roughly following the division of hydrologic regions" (Gross et al, 2024b).
+As shown in the time series, the PDSI follows a similar pattern across all climate zones, though varies in magnitude across climate zones.
+The boxplot shows the variation of PDSI across climate zones, showing that some zones are have a higher maginitude of drought severity than other zones.
+Given that PDSI is a long term measure of drought, it may not be a suitable measure of monthly demand and therefore is not included in the machine learning model discussed in this project.
+
+```{r Explore-PDSI, echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+```
+
+### Months
+
+Normalized demand (GPCD) by month was examined to see whether GPCD may noticeably change over the course of a year.
+As shown in the below boxplot titled "Normalized Demand by Month", there is some variation in GPCD from month to month, indicating that month could account for some variation in demand.
+
+```{r Explore-Month, echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+```
+
+### Median Household Income
+
+Median household income is a socioeconomic factor that could help to explain some variation in water use.
+MHI was plotted against normalized demand in the below chart to see whether any patterns emerge.
+Based on the chart, it is difficult to tell what type of impact MHI might have on GPCD, therefore it will be examined further through ANOVA testing to determine its potential for inclusion in the machine learning model.
+
+```{r Explore-MHI, echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+```
+
+### Divide Dataset into Training and Test Sets
+
+To further analyze the data through ANOVA analysis, the dataset set was split into training and test sets using the below code which splits 80% of the records into the training set and 20% of the records into the test set.
+A seed of 1999 was set to allow for reproducibility of results.
+
+```{r Split-training-test-sets, echo=TRUE, message=FALSE, warning=FALSE}
+
+```
+
+### ANOVA Analysis
+
+A series of one-way ANOVAs were used to assess how each of the above described factors contribute to variations in normalized demand in gpcd for consideration as predictors in the machine learning model using the training data set.
+The ANOVA results shown in the below table indicate that regional and climatic factors have the strongest influence on water use, with County, Hydrologic Region and Climate Zone showing highly significant effects.
+Socioeconomic conditions (MHI) and the COVID period also contribute significantly, alongside temporal factors such as Year.
+Month and Temperature exhibit weaker but still significant effects, suggesting some seasonal and weather-related variability.
+In contrast, precipitation does not show a significant impact, implying it adds little explanatory power in this model.
+
+```{r ANOVAs, message=FALSE, warning=FALSE, include=FALSE}
+
+```
+
+```{r ANOVAs-results, echo=FALSE, message=FALSE, warning=FALSE}
+
+```
+
+## 2.3 Modeling Approach and Analysis
+
+Three machine learning models were trained to predict GPCD using the hydrologic, climatic, temporal, socioeconomic, and weather-related variables described above by using the following three methods: - Generalized linear model (GLM) - K-nearest neighbors (KNN) - Random forest
+
+### GLM (linear regression)
+
+The generalized linear model (GLM) was trained using the hydrologic, climatic, temporal, socioeconomic, and weather-related predictors described above using the below code.
+
+```{r GLM, echo=TRUE, message=FALSE, warning=FALSE}
+
+```
+
+On the test set, the model produced an RMSE of 29.3, an MAE of 16.9, and an R² of 0.26, indicating very low predictive accuracy.
+This is reflected in the Predicted vs Observed GPCD scatter plot which shows predicted GPCD values from the model against observed values.
+The black dashed line represents the ideal 1:1 relationship where predictions perfectly match observations.
+Most points deviate from this line, indicating prediction errors.
+A warning was generated about a rank-deficient fit suggests multi-collinearity among predictors, which likely contributed to poor performance.
+Overall, the GLM model does not adequately capture variability in GPCD.
+
+```{r GLM-results, echo=FALSE, message=FALSE, warning=FALSE}
+
+```
+
+### KNN (k-nearest neighbors)
+
+A k-nearest neighbors regression model was trained to predict GPCD using the same hydrologic, climatic, temporal, socioeconomic, and weather-related variables used for the GLM model.
+
+```{r KNN, echo=TRUE, message=FALSE, warning=FALSE}
+
+```
+
+The optimal number of neighbors was k = 6, as determined through tuning.
+On the test set, the model achieved an RMSE of 22.6, an MAE of 10.8, and an R² of 0.56, indicating moderate predictive accuracy.
+The predictive accuracy is also reflected in the Predicted vs Observed GPCD scatter plot which shows predicted GPCD values from the model against observed values.
+When compared to the scatter plot of predicted versus observed GPCD values for the GLM, points are closer to the 1:1 line indicating improved accuracy.
+
+```{r KNN-results, echo=FALSE, message=FALSE, warning=FALSE}
+
+```
+
+### Random Forest
+
+A random forest model was trained to predict GPCD using the same variables used for the GLM and KNN models using the code shown below.
+
+```{r RF, echo=TRUE, message=FALSE, warning=FALSE}
+
+```
+
+The random forest model outperformed both GLM and KNN, achieving an RMSE of 18.22, MAE of 9.2, and R² of 0.71, explaining about 71% of variance in GPCD.
+The predictive accuracy is reflected in the Predicted vs Observed GPCD scatter plot which shows points much closer to the line than seen with the GLM and KNN models, indicating higher prediction accuracy.
+The scatter plot also shows that at higher gpcd values, the model tends to under-predict gpcd.
+Variable importance analysis identified temperature, MHI, and hydrologic region as key predictors.
+
+Detailed results and a summary of the random forest model are provided below.
+
+```{r RF-results, echo=FALSE, message=FALSE, warning=FALSE}
+
+```
+
+```{r RF-model-summary, echo=FALSE, message=FALSE, warning=FALSE}
+
+```
+
+# Section 3: Results
+
+The data exploration and ANOVA analysis yielded the following results:
+
+-   Demand Patterns: Residential water demand in California shows substantial spatial and temporal variability.
+
+-   Regional variation: Hydrologic regions differ significantly in normalized demand (GPCD).
+
+-   Seasonality: Demand peaks during summer months, correlating with higher temperatures and lower precipitation.
+
+-   Annual trends: Yearly demand fluctuates with climate conditions, with a notable increase during the COVID stay-at-home period (March 2020–June 2021).
+
+-   ANOVA Findings: One-way ANOVA tests identified the most influential factors on normalized demand
+
+    -   Highly significant: County, Hydrologic Region, Climate Zone, Year, COVID period, and Median Household Income (MHI).
+
+    -   Moderately significant: Month and Temperature.
+
+    -   Not significant: Precipitation, suggesting limited explanatory power for monthly demand.
+
+Three models were evaluated on the test set:
+
+-   GLM (Linear Regression): RMSE = 29.3, R² = 0.26, MAE = 16.9 — poor predictive accuracy
+
+-   KNN (k = 6): RMSE = 22.6, R² = 0.56, MAE = 10.8 — moderate performance.
+
+-   Random Forest: RMSE = 18.2, R² = 0.71, MAE = 9.2 — best performance, explaining \~71% of variance.
+
+An analysis of the variable importance in the random forest model revealed:
+
+-   Top predictors: Temperature, MHI, and county-level factors (e.g. Nevada County).
+
+-   Secondary factors: Hydrologic Regions (South Lahontan, South Coast and North Lahontan), COVID period, year indicators (2020 and 2021)
+
+-   Seasonal indicators: Summer months (July and August) contributed modestly.
+
+-   Other notable predictors: specific climate zones (e.g. Climate Zone 14)
+
+-   Additional counties including Kings, Shasta, and San Diego
+
+Box plots examining error at different GPCD levels were created to see how well the random forest model predicts gpcd as gpcd increases.
+This analysis, shown below, reveals higher prediction errors for higher GPCD ranges (200+), suggesting that stratified modeling or additional features could further enhance accuracy.
+
+```{r RF-detailed-results, echo=FALSE, message=FALSE, warning=FALSE}
+
+```
+
+# Section 4: Conclusion
+
+California’s residential water demand is shaped by regional, climatic, and socioeconomic factors.
+Machine learning models, particularly Random Forest, provide robust predictive capability for GPCD.
+Additional factors could further improve these results, such as water prices, population density, and water conservation program data.
+In addition, one representative year was used to estimate population and MHI for each water system, but in reality these values vary by year.
+Incorporating annual changes in population and MHI could further improve the model.
+These insights can inform future water supply needs based on population growth, water conservation strategies, policy decisions, and the potential impacts of climate change on demands.
+
+# Section 5: References
+
+Executive Department State of California (2021).
+Executive Order N-07-21.
+<https://www.gov.ca.gov/wp-content/uploads/2021/06/6.11.21-EO-N-07-21-signed.pdf>
+
+Gross, M., A. Escriva-Bou, E. Porse, A. Cominola (2024a).
+CaRDS – the Statewide California Residential Water Demand and Supply open dataset, HydroShare (data download), <https://doi.org/10.4211/hs.4ec7019fe63944bf87d40d2cdfa0d686>
+
+Gross, MP., Escriva-Bou, A., Porse, E. 
+*et al.* (2024b).
+CaRDS - the statewide California Residential water Demand and Supply open dataset. 
+*Sci Data* **11**, 632 (2024).
+<https://doi.org/10.1038/s41597-024-03474-y>
+
+Heberger, Matthew (2014).
+New Data Show Residential Water Use across California.
+Pacific Institute.
+<https://pacinst.org/new-data-show-residential-per-capita-water-use-across-california/>
+
+State Water Resources Control Board (2015).
+Factors that can affect per capita water.
+<https://www.waterboards.ca.gov/drought/docs/factors.pdf>
+
+State Water Resources Control Board (2022).
+2022 Risk Assessment Results.
+Prepared as part of the Safe and Affordable Funding for Equity and Resilience (SAFER) Program.
+<https://www.waterboards.ca.gov/drinking_water/certlic/drinkingwater/documents/needs/2022risk.xlsx>
+
+Stillitano, Caroline (2025).
+Understanding California's climate Zones.
+San Diego Regional Climate collaborative.
+5-6-2025.
+<https://digital.sandiego.edu/cgi/viewcontent.cgi?article=1043&context=npi-sdclimate>
+
+United States Census Bureau (2020).
+US Census, 2020 American Community Survey 5-Year Estimates (2016-2020).
+<https://dof.ca.gov/reports/demographic-reports/american-community-survey/#ACS2020x5>
